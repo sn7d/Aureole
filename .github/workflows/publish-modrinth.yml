@@ -1,4 +1,4 @@
-# Publishes the mod jar to Modrinth. Run it from the Actions tab ("Publish to Modrinth" -> Run workflow).
+# Publishes one jar per supported Minecraft line (versions/*.properties) to Modrinth. Run it from the Actions tab ("Publish to Modrinth" -> Run workflow).
 # Needs a repository secret MODRINTH_TOKEN: a Modrinth personal access token with the "Create versions" scope
 # (modrinth.com -> Settings -> Personal access tokens). Your Modrinth password is never used.
 name: Publish to Modrinth
@@ -8,7 +8,7 @@ on:
       project:
         description: 'Modrinth project slug or ID'
         required: true
-        default: 'angelic-halo'
+        default: 'aureole'
       version_type:
         description: 'release, beta or alpha'
         required: true
@@ -16,7 +16,7 @@ on:
       changelog:
         description: 'Changelog (Markdown)'
         required: false
-        default: 'See the README for everything Angelic Halo can do.'
+        default: 'See the README for everything Aureole can do.'
 
 jobs:
   publish:
@@ -28,7 +28,16 @@ jobs:
           java-version: '25'
           distribution: 'microsoft'
           cache: 'gradle'
-      - run: chmod +x ./gradlew && ./gradlew build
+      - name: Build every Minecraft line
+        run: |
+          chmod +x ./gradlew
+          mkdir -p dist
+          for f in versions/*.properties; do
+            line=$(basename "$f" .properties)
+            for i in 1 2 3; do ./gradlew clean jar -Pmc=$line && break; sleep $((i * 30)); done
+            cp build/libs/aureole-*+$line.jar dist/
+          done
+          ls dist
       - name: Upload to Modrinth
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
@@ -40,37 +49,41 @@ jobs:
           python3 - <<'PY'
           import json, os, glob, urllib.request, uuid
           api = "https://api.modrinth.com/v2"
-          ua = {"User-Agent": "sn7d/angelic-halo publish workflow", "Authorization": os.environ["MODRINTH_TOKEN"]}
+          ua = {"User-Agent": "sn7d/aureole publish workflow", "Authorization": os.environ["MODRINTH_TOKEN"]}
           props = dict(l.split("=", 1) for l in open("gradle.properties").read().splitlines() if "=" in l and not l.startswith("#"))
-          mc, version = props["minecraft_version"].strip(), props["mod_version"].strip()
+          version = props["mod_version"].strip()
           req = urllib.request.Request(f"{api}/project/{os.environ['PROJECT']}", headers=ua)
           project_id = json.load(urllib.request.urlopen(req))["id"]
-          jar = [j for j in glob.glob("build/libs/*.jar") if not j.endswith(("-sources.jar", "-gametest.jar"))][0]
-          data = {
-              "name": f"Angelic Halo {version}",
-              "version_number": f"{version}+{mc}",
-              "changelog": os.environ["CHANGELOG"],
-              "dependencies": [
-                  {"project_id": "P7dR8mSH", "dependency_type": "required"},   # Fabric API
-                  {"project_id": "mOgUt4GM", "dependency_type": "optional"},   # Mod Menu
-              ],
-              "game_versions": [mc],
-              "version_type": os.environ["VERSION_TYPE"],
-              "loaders": ["fabric"],
-              "featured": True,
-              "project_id": project_id,
-              "file_parts": ["file"],
-              "primary_file": "file",
-          }
-          boundary = uuid.uuid4().hex
-          body = b"".join([
-              f"--{boundary}\r\nContent-Disposition: form-data; name=\"data\"\r\nContent-Type: application/json\r\n\r\n".encode(),
-              json.dumps(data).encode(), b"\r\n",
-              f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{os.path.basename(jar)}\"\r\nContent-Type: application/java-archive\r\n\r\n".encode(),
-              open(jar, "rb").read(), b"\r\n",
-              f"--{boundary}--\r\n".encode(),
-          ])
-          headers = dict(ua, **{"Content-Type": f"multipart/form-data; boundary={boundary}"})
-          res = json.load(urllib.request.urlopen(urllib.request.Request(f"{api}/version", data=body, headers=headers, method="POST")))
-          print(f"Published {res['version_number']}: https://modrinth.com/mod/{os.environ['PROJECT']}/version/{res['id']}")
+          lines = sorted((os.path.basename(f)[:-11] for f in glob.glob("versions/*.properties")), key=lambda v: [int(x) for x in v.split(".")])
+          for i, line in enumerate(lines):
+              lp = dict(l.split("=", 1) for l in open(f"versions/{line}.properties").read().splitlines() if "=" in l and not l.startswith("#"))
+              game_versions = [v.strip() for v in lp["game_versions"].split(",")]
+              jar = glob.glob(f"dist/aureole-*+{line}.jar")[0]
+              data = {
+                  "name": f"Aureole {version} for {line}" + (".x" if len(game_versions) > 1 else ""),
+                  "version_number": f"{version}+{line}",
+                  "changelog": os.environ["CHANGELOG"],
+                  "dependencies": [
+                      {"project_id": "P7dR8mSH", "dependency_type": "required"},   # Fabric API
+                      {"project_id": "mOgUt4GM", "dependency_type": "optional"},   # Mod Menu
+                  ],
+                  "game_versions": game_versions,
+                  "version_type": os.environ["VERSION_TYPE"],
+                  "loaders": ["fabric"],
+                  "featured": i == len(lines) - 1,
+                  "project_id": project_id,
+                  "file_parts": ["file"],
+                  "primary_file": "file",
+              }
+              boundary = uuid.uuid4().hex
+              body = b"".join([
+                  f"--{boundary}\r\nContent-Disposition: form-data; name=\"data\"\r\nContent-Type: application/json\r\n\r\n".encode(),
+                  json.dumps(data).encode(), b"\r\n",
+                  f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{os.path.basename(jar)}\"\r\nContent-Type: application/java-archive\r\n\r\n".encode(),
+                  open(jar, "rb").read(), b"\r\n",
+                  f"--{boundary}--\r\n".encode(),
+              ])
+              headers = dict(ua, **{"Content-Type": f"multipart/form-data; boundary={boundary}"})
+              res = json.load(urllib.request.urlopen(urllib.request.Request(f"{api}/version", data=body, headers=headers, method="POST")))
+              print(f"Published {res['version_number']} for {', '.join(game_versions)}: https://modrinth.com/mod/{os.environ['PROJECT']}/version/{res['id']}")
           PY
