@@ -1,0 +1,68 @@
+# Dev branch only: runs the README showcase with the owner's skin and publishes screenshots + jar to the ci-output branch.
+name: dev-preview
+on:
+  push:
+    branches: [dev]
+    paths-ignore: ['scripts/versions_probe.py', 'scripts/api_probe.sh', '.github/workflows/probe.yml', 'probe.trigger']
+permissions:
+  contents: write
+jobs:
+  showcase:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+          cache: 'gradle'
+      - run: chmod +x ./gradlew
+      - name: Owner's skin (test client only)
+        run: python3 scripts/fetch_skin.py itsd7 src/gametest/resources | tee skin.txt
+      - id: test
+        continue-on-error: true
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q xvfb mesa-utils libgl1-mesa-dri mesa-vulkan-drivers libvulkan1
+          for i in 1 2 3; do ./gradlew gametestClasses && break; sleep $((i * 30)); done
+          xvfb-run -a -s "-screen 0 1920x1080x24 +extension GLX" ./gradlew runClientGameTest --stacktrace
+      - if: always()
+        run: |
+          mkdir -p out/screenshots
+          cp skin.txt out/ || true
+          find . -path ./out -prune -o -type f -path '*screenshots*' -name '*.png' -exec cp {} out/screenshots/ \; || true
+          ./gradlew jar -q && mkdir -p out/libs && cp build/libs/*.jar out/libs/ || true
+          echo "showcase=${{ steps.test.outcome }} sha=${{ github.sha }}" > out/STATUS.txt
+          cd out && git init -q -b ci-output && git config user.name ci && git config user.email ci@users.noreply.github.com
+          git add -A && git commit -q -m "showcase ${{ github.sha }}" && git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" ci-output
+
+  essential:
+    # Same tests with Essential (and its dependencies) installed, published to the ci-essential branch.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+          cache: 'gradle'
+      - run: chmod +x ./gradlew
+      - run: python3 scripts/fetch_skin.py itsd7 src/gametest/resources || echo "skin unavailable, using default"
+      - run: python3 scripts/compat_mods.py "$(grep '^minecraft_version=' versions/26.2.properties | cut -d= -f2)" compat-mods essential | tee mods.txt
+      - id: test
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q xvfb mesa-utils libgl1-mesa-dri mesa-vulkan-drivers libvulkan1
+          for i in 1 2 3; do ./gradlew jar gametestJar -PcompatMods=compat-mods && break; sleep $((i * 30)); done
+          # a fresh launcher-style install shows the one-time accessibility welcome screen: pre-answer it
+          mkdir -p run/prod && printf 'onboardAccessibility:false\nskipMultiplayerWarning:true\ntutorialStep:none\n' > run/prod/options.txt
+          ./gradlew prodClientGameTest -PcompatMods=compat-mods --stacktrace 2>&1 | tee gametest.log; exit ${PIPESTATUS[0]}
+      - if: always()
+        run: |
+          mkdir -p out/screenshots
+          cp mods.txt gametest.log out/ || true
+          find . -path ./out -prune -o -type f -path '*screenshots*' -name '*.png' -exec cp {} out/screenshots/ \; || true
+          find . -path ./out -prune -o -type f -name 'latest.log' -path '*logs*' -exec cp {} out/latest.log \; || true
+          echo "essential=${{ steps.test.outcome }} sha=${{ github.sha }}" > out/STATUS.txt
+          cd out && git init -q -b ci-essential && git config user.name ci && git config user.email ci@users.noreply.github.com
+          git add -A && git commit -q -m "essential ${{ github.sha }}" && git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" ci-essential
