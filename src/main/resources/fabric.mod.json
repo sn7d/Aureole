@@ -1,0 +1,42 @@
+{
+	"schemaVersion": 1,
+	"id": "angelichalo",
+	"version": "${version}",
+	"name": "Angelic Halo",
+	"description": "A ring of light that follows you. Sweeping scans with fading trails, crowns of light, orbiting text and projected emblems, each with its own colour studio, tuned live in an animated menu with a 3D preview. Purely cosmetic and client-side: nothing is sent to the server.",
+	"authors": [
+		"Cookiecodes (sn7d)"
+	],
+	"contact": {
+		"homepage": "https://github.com/sn7d/angelic-halo",
+		"sources": "https://github.com/sn7d/angelic-halo",
+		"issues": "https://github.com/sn7d/angelic-halo/issues"
+	},
+	"license": "MIT",
+	"icon": "assets/angelichalo/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.angelichalo.AngelicHalo"
+		],
+		"modmenu": [
+			"com.angelichalo.compat.ModMenuCompat"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"modmenu": "*"
+	},
+	"custom": {
+		"modmenu": {
+			"links": {
+				"modmenu.github_releases": "https://github.com/sn7d/angelic-halo/releases"
+			}
+		}
+	}
+}
