@@ -83,6 +83,58 @@ public final class HaloRenderer {
 
 	private static boolean loggedError;
 
+	/**
+	 * Shader support: Iris only draws render pipelines it knows. Register ours through Iris's public API
+	 * ({@code IrisApi.assignPipeline}, API v0.3) as basic coloured geometry, so the halo stays visible with
+	 * shaderpacks. Reflection keeps Iris an optional companion rather than a dependency.
+	 */
+	public static void registerWithIris() {
+		try {
+			Class<?> apiClass = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+			Class<?> programClass = Class.forName("net.irisshaders.iris.api.v0.IrisProgram");
+			Object api = apiClass.getMethod("getInstance").invoke(null);
+			@SuppressWarnings({"unchecked", "rawtypes"})
+			Object basic = Enum.valueOf((Class) programClass, "BASIC");
+			java.lang.reflect.Method assign = apiClass.getMethod("assignPipeline", RenderPipeline.class, programClass);
+			int count = 0;
+			for (RenderPipeline p : new RenderPipeline[] {DEPTH_PIPELINE, XRAY_PIPELINE, GLOW_PIPELINE, GLOW_XRAY_PIPELINE,
+					HIDDEN_PIPELINE, GLOW_HIDDEN_PIPELINE}) {
+				assign.invoke(api, p, basic);
+				count++;
+			}
+			AngelicHalo.LOGGER.info("Registered {} halo render pipelines with Iris for shaderpack support", count);
+		} catch (ClassNotFoundException e) {
+			// Iris not installed: nothing to do
+		} catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+			AngelicHalo.LOGGER.warn("Could not register halo pipelines with Iris; the halo may be hidden while shaders are on", e);
+		}
+	}
+
+	private static java.lang.invoke.MethodHandle shaderInUse;
+	private static boolean shaderLookupDone;
+
+	/** True while an Iris shaderpack is active (looked up reflectively; false without Iris). */
+	public static boolean shadersActive() {
+		if (!shaderLookupDone) {
+			shaderLookupDone = true;
+			try {
+				Class<?> apiClass = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+				Object api = apiClass.getMethod("getInstance").invoke(null);
+				shaderInUse = java.lang.invoke.MethodHandles.publicLookup()
+						.findVirtual(apiClass, "isShaderPackInUse", java.lang.invoke.MethodType.methodType(boolean.class))
+						.bindTo(api);
+			} catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+				shaderInUse = null;
+			}
+		}
+		if (shaderInUse == null) return false;
+		try {
+			return (boolean) shaderInUse.invokeExact();
+		} catch (Throwable t) {
+			return false;
+		}
+	}
+
 	/** True if a render error was ever caught (checked by the in-game test). */
 	public static boolean hasFailed() {
 		return loggedError;
@@ -148,13 +200,23 @@ public final class HaloRenderer {
 
 		CORE_QUADS.clear();
 		GLOW_QUADS.clear();
-		HaloGeometry.build(c, frame, CORE_QUADS, GLOW_QUADS);
+		// Shaderpacks bring their own bloom and dither soft alpha edges, so with a pack active the halo hands glow
+		// over to the pack (unless the player opts in) and draws crisp edges only. Keeps colours true, no white-out.
+		boolean shaders = shadersActive();
+		HaloGeometry.setShaderMode(shaders);
+		boolean ownGlow = !shaders || c.bloomWithShaders;
+		HaloGeometry.build(c, frame, CORE_QUADS, ownGlow ? GLOW_QUADS : HaloGeometry.DISCARD);
 
 		PoseStack poseStack = context.poseStack();
 		HaloDecor.render(context, c, player, frame.cx(), frame.cy(), frame.cz(), frame.time(), health,
-				c.throughWalls && c.hiddenOpacity >= 0.995, partial);
+				c.throughWalls && c.hiddenOpacity >= 0.995, partial, ownGlow ? GLOW_QUADS : HaloGeometry.DISCARD);
 		boolean allOnTop = c.throughWalls && c.hiddenOpacity >= 0.995;
 		boolean hiddenPass = c.throughWalls && !allOnTop && c.hiddenOpacity > 0.005;
+
+		if (shaders && c.shaderColorBoost > 1.001) {
+			CORE_QUADS.saturate((float) c.shaderColorBoost);
+			GLOW_QUADS.saturate((float) c.shaderColorBoost);
+		}
 
 		if (!GLOW_QUADS.isEmpty()) {
 			QuadBuffer glow = GLOW_QUADS.snapshot();
@@ -228,6 +290,21 @@ public final class HaloRenderer {
 			put(x1, y1, z1, c1);
 			put(x2, y2, z2, c2);
 			put(x3, y3, z3, c3);
+		}
+
+		/** Pushes every colour away from its grey value (1 = unchanged). */
+		void saturate(float k) {
+			for (int v = 0; v < vertices; v++) {
+				int c = col[v];
+				float r = (c >> 16) & 0xFF;
+				float g = (c >> 8) & 0xFF;
+				float b = c & 0xFF;
+				float l = 0.299f * r + 0.587f * g + 0.114f * b;
+				int nr = Math.max(0, Math.min(255, Math.round(l + (r - l) * k)));
+				int ng = Math.max(0, Math.min(255, Math.round(l + (g - l) * k)));
+				int nb = Math.max(0, Math.min(255, Math.round(l + (b - l) * k)));
+				col[v] = (c & 0xFF000000) | (nr << 16) | (ng << 8) | nb;
+			}
 		}
 
 		void emit(PoseStack.Pose pose, VertexConsumer buffer, double alpha) {
